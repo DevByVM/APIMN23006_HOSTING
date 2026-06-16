@@ -1,0 +1,7 @@
+.github
+vendor
+tests
+logs
+var
+.git
+*.zip
