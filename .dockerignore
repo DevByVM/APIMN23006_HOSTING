@@ -1,5 +1,4 @@
 .github
-vendor
 tests
 logs
 var

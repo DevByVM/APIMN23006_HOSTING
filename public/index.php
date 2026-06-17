@@ -2,20 +2,38 @@
 
 declare(strict_types=1);
 
-header('Content-Type: application/json; charset=utf-8');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Headers: Content-Type');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+use Psr\Http\Message\ResponseInterface as Response;
+use Psr\Http\Message\ServerRequestInterface as Request;
+use Slim\Factory\AppFactory;
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    exit;
+require __DIR__ . '/../vendor/autoload.php';
+
+$app = AppFactory::create();
+
+$basePath = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
+
+if ($basePath !== '' && $basePath !== '/') {
+    $app->setBasePath($basePath);
 }
 
-function responder(array $data, int $statusCode = 200): void
+$app->addBodyParsingMiddleware();
+
+function agregarCors(Response $response): Response
 {
-    http_response_code($statusCode);
-    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
-    exit;
+    return $response
+        ->withHeader('Content-Type', 'application/json; charset=utf-8')
+        ->withHeader('Access-Control-Allow-Origin', '*')
+        ->withHeader('Access-Control-Allow-Headers', 'Content-Type')
+        ->withHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+}
+
+function responderJson(Response $response, array $data, int $statusCode = 200): Response
+{
+    $response->getBody()->write(
+        json_encode($data, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE)
+    );
+
+    return agregarCors($response)->withStatus($statusCode);
 }
 
 function obtenerConexion(): PDO
@@ -23,11 +41,11 @@ function obtenerConexion(): PDO
     static $pdo = null;
 
     if ($pdo === null) {
-        $host = getenv('DB_HOST');
-        $port = getenv('DB_PORT');
-        $dbname = getenv('DB_NAME');
-        $user = getenv('DB_USER');
-        $password = getenv('DB_PASSWORD');
+        $host = getenv('DB_HOST') ?: 'localhost';
+        $port = getenv('DB_PORT') ?: '3306';
+        $dbname = getenv('DB_NAME') ?: 'bd_p3_clave2';
+        $user = getenv('DB_USER') ?: 'api_p3';
+        $password = getenv('DB_PASSWORD') ?: 'ApiP3_2026';
 
         $pdo = new PDO(
             "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4",
@@ -43,147 +61,148 @@ function obtenerConexion(): PDO
     return $pdo;
 }
 
-$method = $_SERVER['REQUEST_METHOD'];
-$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$app->options('/{routes:.+}', function (Request $request, Response $response): Response {
+    return agregarCors($response);
+});
 
-$basePath = rtrim(str_replace('\\', '/', dirname($_SERVER['SCRIPT_NAME'])), '/');
+$app->get('/', function (Request $request, Response $response): Response {
+    return responderJson($response, [
+        'estado' => true,
+        'mensaje' => 'API MN23006 funcionando correctamente'
+    ]);
+});
 
-if ($basePath === '/') {
-    $basePath = '';
-}
+$app->get('/hospitales', function (Request $request, Response $response): Response {
+    $stmt = obtenerConexion()->query('SELECT * FROM hospitales');
+    $hospitales = $stmt->fetchAll();
 
-$path = preg_replace('#^' . preg_quote($basePath, '#') . '#', '', $uri);
-$path = trim($path, '/');
+    return responderJson($response, [
+        'estado' => true,
+        'mensaje' => 'Hospitales obtenidos correctamente',
+        'data' => $hospitales
+    ]);
+});
 
-$partes = $path === '' ? [] : explode('/', $path);
+$app->get('/hospitales/{id}', function (Request $request, Response $response, array $args): Response {
+    $idHospital = $args['id'];
 
-try {
-    if ($path === '') {
-        responder([
-            'estado' => true,
-            'mensaje' => 'API MN23006 funcionando correctamente'
-        ]);
+    $stmt = obtenerConexion()->prepare(
+        'SELECT * FROM hospitales WHERE IdHospital = :IdHospital'
+    );
+
+    $stmt->execute([
+        ':IdHospital' => $idHospital
+    ]);
+
+    $hospital = $stmt->fetch();
+
+    if (!$hospital) {
+        return responderJson($response, [
+            'estado' => false,
+            'mensaje' => 'Hospital no encontrado'
+        ], 404);
     }
 
-    if ($method === 'GET' && count($partes) === 1 && $partes[0] === 'hospitales') {
-        $stmt = obtenerConexion()->query('SELECT * FROM hospitales');
-        $hospitales = $stmt->fetchAll();
+    return responderJson($response, [
+        'estado' => true,
+        'mensaje' => 'Hospital obtenido correctamente',
+        'data' => $hospital
+    ]);
+});
 
-        responder([
-            'estado' => true,
-            'mensaje' => 'Hospitales obtenidos correctamente',
-            'data' => $hospitales
-        ]);
+$app->post('/hospitales', function (Request $request, Response $response): Response {
+    $data = $request->getParsedBody();
+
+    if (!is_array($data)) {
+        return responderJson($response, [
+            'estado' => false,
+            'mensaje' => 'No se recibió un JSON válido'
+        ], 400);
     }
 
-    if ($method === 'GET' && count($partes) === 2 && $partes[0] === 'hospitales') {
-        $idHospital = $partes[1];
+    $stmt = obtenerConexion()->prepare(
+        'INSERT INTO hospitales
+        (IdHospital, NomHospital, CapacidadAtencion, Especialidades)
+        VALUES
+        (:IdHospital, :NomHospital, :CapacidadAtencion, :Especialidades)'
+    );
 
-        $stmt = obtenerConexion()->prepare('SELECT * FROM hospitales WHERE IdHospital = :IdHospital');
-        $stmt->execute([
-            ':IdHospital' => $idHospital
-        ]);
+    $stmt->execute([
+        ':IdHospital' => $data['IdHospital'],
+        ':NomHospital' => $data['NomHospital'],
+        ':CapacidadAtencion' => $data['CapacidadAtencion'],
+        ':Especialidades' => $data['Especialidades']
+    ]);
 
-        $hospital = $stmt->fetch();
+    return responderJson($response, [
+        'estado' => true,
+        'mensaje' => 'Hospital registrado correctamente'
+    ], 201);
+});
 
-        if (!$hospital) {
-            responder([
-                'estado' => false,
-                'mensaje' => 'Hospital no encontrado'
-            ], 404);
-        }
+$app->get('/doctores', function (Request $request, Response $response): Response {
+    $stmt = obtenerConexion()->query('SELECT * FROM doctores');
+    $doctores = $stmt->fetchAll();
 
-        responder([
-            'estado' => true,
-            'mensaje' => 'Hospital obtenido correctamente',
-            'data' => $hospital
-        ]);
+    return responderJson($response, [
+        'estado' => true,
+        'mensaje' => 'Doctores obtenidos correctamente',
+        'data' => $doctores
+    ]);
+});
+
+$app->post('/doctores', function (Request $request, Response $response): Response {
+    $data = $request->getParsedBody();
+
+    if (!is_array($data)) {
+        return responderJson($response, [
+            'estado' => false,
+            'mensaje' => 'No se recibió un JSON válido'
+        ], 400);
     }
 
-    if ($method === 'POST' && count($partes) === 1 && $partes[0] === 'hospitales') {
-        $data = json_decode(file_get_contents('php://input'), true);
+    $stmt = obtenerConexion()->prepare(
+        'INSERT INTO doctores
+        (IdDoctor, NombresDoctor, ApellidosDoctor, Especialidad, TurnoAtencion, PacientesMinDiarios, Sueldo, IdHospital)
+        VALUES
+        (:IdDoctor, :NombresDoctor, :ApellidosDoctor, :Especialidad, :TurnoAtencion, :PacientesMinDiarios, :Sueldo, :IdHospital)'
+    );
 
-        if (!is_array($data)) {
-            responder([
-                'estado' => false,
-                'mensaje' => 'No se recibió un JSON válido'
-            ], 400);
-        }
+    $stmt->execute([
+        ':IdDoctor' => $data['IdDoctor'],
+        ':NombresDoctor' => $data['NombresDoctor'],
+        ':ApellidosDoctor' => $data['ApellidosDoctor'],
+        ':Especialidad' => $data['Especialidad'],
+        ':TurnoAtencion' => $data['TurnoAtencion'],
+        ':PacientesMinDiarios' => $data['PacientesMinDiarios'],
+        ':Sueldo' => $data['Sueldo'],
+        ':IdHospital' => $data['IdHospital']
+    ]);
 
-        $stmt = obtenerConexion()->prepare(
-            'INSERT INTO hospitales
-            (IdHospital, NomHospital, CapacidadAtencion, Especialidades)
-            VALUES
-            (:IdHospital, :NomHospital, :CapacidadAtencion, :Especialidades)'
-        );
+    return responderJson($response, [
+        'estado' => true,
+        'mensaje' => 'Doctor registrado correctamente'
+    ], 201);
+});
 
-        $stmt->execute([
-            ':IdHospital' => $data['IdHospital'],
-            ':NomHospital' => $data['NomHospital'],
-            ':CapacidadAtencion' => $data['CapacidadAtencion'],
-            ':Especialidades' => $data['Especialidades']
-        ]);
+$errorMiddleware = $app->addErrorMiddleware(true, true, true);
 
-        responder([
-            'estado' => true,
-            'mensaje' => 'Hospital registrado correctamente'
-        ], 201);
+$errorMiddleware->setDefaultErrorHandler(
+    function (
+        Request $request,
+        Throwable $exception,
+        bool $displayErrorDetails,
+        bool $logErrors,
+        bool $logErrorDetails
+    ) use ($app): Response {
+        $response = $app->getResponseFactory()->createResponse();
+
+        return responderJson($response, [
+            'estado' => false,
+            'mensaje' => 'Error en la API',
+            'error' => $exception->getMessage()
+        ], 500);
     }
+);
 
-    if ($method === 'GET' && count($partes) === 1 && $partes[0] === 'doctores') {
-        $stmt = obtenerConexion()->query('SELECT * FROM doctores');
-        $doctores = $stmt->fetchAll();
-
-        responder([
-            'estado' => true,
-            'mensaje' => 'Doctores obtenidos correctamente',
-            'data' => $doctores
-        ]);
-    }
-
-    if ($method === 'POST' && count($partes) === 1 && $partes[0] === 'doctores') {
-        $data = json_decode(file_get_contents('php://input'), true);
-
-        if (!is_array($data)) {
-            responder([
-                'estado' => false,
-                'mensaje' => 'No se recibió un JSON válido'
-            ], 400);
-        }
-
-        $stmt = obtenerConexion()->prepare(
-            'INSERT INTO doctores
-            (IdDoctor, NombresDoctor, ApellidosDoctor, Especialidad, TurnoAtencion, PacientesMinDiarios, Sueldo, IdHospital)
-            VALUES
-            (:IdDoctor, :NombresDoctor, :ApellidosDoctor, :Especialidad, :TurnoAtencion, :PacientesMinDiarios, :Sueldo, :IdHospital)'
-        );
-
-        $stmt->execute([
-            ':IdDoctor' => $data['IdDoctor'],
-            ':NombresDoctor' => $data['NombresDoctor'],
-            ':ApellidosDoctor' => $data['ApellidosDoctor'],
-            ':Especialidad' => $data['Especialidad'],
-            ':TurnoAtencion' => $data['TurnoAtencion'],
-            ':PacientesMinDiarios' => $data['PacientesMinDiarios'],
-            ':Sueldo' => $data['Sueldo'],
-            ':IdHospital' => $data['IdHospital']
-        ]);
-
-        responder([
-            'estado' => true,
-            'mensaje' => 'Doctor registrado correctamente'
-        ], 201);
-    }
-
-    responder([
-        'estado' => false,
-        'mensaje' => 'Ruta no encontrada'
-    ], 404);
-
-} catch (Throwable $e) {
-    responder([
-        'estado' => false,
-        'mensaje' => 'Error en la API',
-        'error' => $e->getMessage()
-    ], 500);
-}
+$app->run();
